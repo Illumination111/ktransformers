@@ -124,9 +124,9 @@ install_dependencies() {
   # Install dependencies based on OS
   case "$OS" in
     debian|ubuntu|linuxmint|pop)
-      echo "Detected Debian-based system. Installing hwloc and pkg-config via conda..."
+      echo "Detected Debian-based system. Installing libhwloc and pkg-config via conda..."
       if command -v conda &> /dev/null; then
-        conda install -y -c conda-forge hwloc pkg-config
+        conda install -y -c conda-forge libhwloc pkg-config
       else
         echo "conda not found, falling back to apt..."
         $SUDO apt update
