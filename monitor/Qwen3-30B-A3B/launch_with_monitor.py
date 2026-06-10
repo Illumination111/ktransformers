@@ -234,6 +234,13 @@ def main():
     save_experiment_summary(exp_dir, start_ts, exit_code)
     print(f"[monitor] 实验结束，所有数据已保存至: {exp_dir}", flush=True)
 
+    # 11. 自动生成图表
+    try:
+        from plot_experiment import generate_plots
+        generate_plots(exp_dir)
+    except Exception as e:
+        print(f"[monitor] 绘图失败（不影响数据保存）: {e}", flush=True)
+
     sys.exit(exit_code)
 
 
