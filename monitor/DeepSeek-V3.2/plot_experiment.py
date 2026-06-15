@@ -19,8 +19,14 @@
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCRIPT_DIR.parent))
 
 import matplotlib
 
@@ -335,6 +341,15 @@ def generate_plots(exp_dir: Path):
     print(f"[plot] 实验目录: {exp_dir}")
     print(f"[plot] 内存采样点: {len(mem_records) if mem_records else 0}")
     print(f"[plot] 请求记录数: {len(req_records)}")
+
+    try:
+        from monitor_common.inference_metrics import generate_inference_metrics_summary
+        from monitor_common.inference_plots import plot_benchmark_metrics
+
+        generate_inference_metrics_summary(exp_dir)
+        plot_benchmark_metrics(exp_dir, out_dir)
+    except Exception as exc:
+        print(f"[plot] extended inference metrics skipped: {exc}")
 
     plot_memory_timeline(mem_records, startup, exp_dir, out_dir)
     plot_request_metrics(req_records, exp_dir, out_dir)

@@ -6,6 +6,34 @@
 
 DeepSeek-V3.2 的 AMXINT8 per-NUMA CPU 权重目录约 `644G`。在 4 个 accelerate rank 下，rank0 会持有完整 KT CPU MoE wrapper，其他 rank 仍会叠加各自的模型/加载内存，容易在 KT 初始化后段被系统 `SIGKILL`。建议先用 1GPU 低内存配置验证完整初始化：
 
+推荐直接运行本目录的一键 SFT 实验脚本。默认使用 1GPU lowmem 配置，以优先保证完整跑通监控链路；如果需要 4GPU，可通过 `CUDA_VISIBLE_DEVICES` 和 `ACCELERATE_CONFIG` 覆盖：
+
+```bash
+cd /mnt/data/wbw/ktransformers
+
+monitor/DeepSeek-V3.2-SFT/run_sft_experiment.sh
+```
+
+默认 SFT 命令：
+
+```bash
+/mnt/data/wbw/miniconda3/envs/Kllama/bin/accelerate launch \
+  --config_file examples/ktransformers/accelerate/fsdp2_kt_int8_1gpu_lowmem.yaml \
+  -m llamafactory.cli train \
+  examples/ktransformers/train_lora/deepseek_v32_lora_sft_kt.yaml
+```
+
+4GPU 覆盖示例：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+ACCELERATE_CONFIG=examples/ktransformers/accelerate/fsdp2_kt_int8.yaml \
+PRETRAIN_METRICS_JSON=/path/to/deepseek_before.json \
+FINETUNED_METRICS_JSON=/path/to/deepseek_after.json \
+monitor/DeepSeek-V3.2-SFT/run_sft_experiment.sh \
+  --experiment-dir /mnt/data/wbw/ktransformers/monitor/DeepSeek-V3.2-SFT/deepseek_sft_full
+```
+
 ```bash
 cd /mnt/data/wbw/LLaMA-Factory
 
@@ -73,9 +101,13 @@ monitor/DeepSeek-V3.2-SFT/YYYYMMDD_HHMMSS/
 ├── train.log                  # 训练 stdout/stderr 完整日志
 ├── resource_timeline.jsonl    # 周期资源采样
 ├── trainer_state_tail.json    # 若 output_dir 中存在 trainer_state.json，则保存尾部日志
+├── sft_metrics_summary.json   # LoRA 参数、资源峰值、吞吐、loss、任务性能差异汇总
 ├── experiment_summary.json    # 退出码、耗时、output_dir、训练产物摘要
 └── plots/
-    └── sft_resource_timeline.png
+    ├── sft_resource_timeline.png
+    ├── sft_summary_metrics.png
+    ├── sft_training_loss.png
+    └── sft_task_performance_delta.png  # 若提供微调前后任务指标
 ```
 
 ## 采样内容
@@ -108,6 +140,16 @@ python /mnt/data/wbw/ktransformers/monitor/DeepSeek-V3.2-SFT/plot_sft_experiment
 | `--train-yaml` | LLaMA-Factory 训练配置 | `deepseek_v32_lora_sft_kt.yaml` |
 | `--offline` | 设置 HF/Transformers 离线模式 | 关闭 |
 | `--dry-run` | 只生成元数据，不启动训练 | 关闭 |
+| `--pretrain-metrics-json` | 微调前任务评测指标 JSON，用于计算性能差异 | 空 |
+| `--finetuned-metrics-json` | 微调后任务评测指标 JSON，用于计算性能差异 | 空 |
+
+`sft_metrics_summary.json` 会汇总：
+
+- LoRA 峰值显存、主机内存和训练进程树 RSS
+- 可训练参数量、总参数量和 LoRA 参数比例
+- 平均 step 时间、samples/s、tokens/s、loss 曲线与收敛摘要
+- 训练日志中可解析的 forward/backward/update 阶段耗时
+- 可选的微调前后任务指标差异
 
 ## 前置依赖
 

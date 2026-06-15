@@ -35,6 +35,7 @@ from pathlib import Path
 # 将脚本所在目录加入 sys.path，方便导入 memory_monitor
 _SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPT_DIR))
+sys.path.insert(0, str(_SCRIPT_DIR.parent))
 
 from memory_monitor import MemoryMonitor, take_memory_snapshot  # noqa: E402
 
@@ -67,6 +68,18 @@ def parse_args():
         metavar="PATH",
         help="覆盖默认实验目录路径；默认在脚本同目录下以 YYYYMMDD_HHMMSS 自动命名",
     )
+    parser.add_argument("--benchmark", action="store_true", help="服务就绪后运行输入/输出长度矩阵推理 benchmark")
+    parser.add_argument("--benchmark-input-lengths", default="128,512,2048", help="逗号分隔输入 token 长度")
+    parser.add_argument("--benchmark-output-lengths", default="128,512", help="逗号分隔输出 token 长度")
+    parser.add_argument("--benchmark-repetitions", type=int, default=1, help="每组长度重复次数")
+    parser.add_argument("--benchmark-warmup", type=int, default=1, help="benchmark 前预热请求数")
+    parser.add_argument("--benchmark-host", default="127.0.0.1", help="OpenAI API host")
+    parser.add_argument("--benchmark-port", type=int, default=None, help="OpenAI API port；默认从 --port 推断或使用 8000")
+    parser.add_argument("--benchmark-model", default=None, help="OpenAI API model 名称；默认从 --served-model-name/--model 推断")
+    parser.add_argument("--benchmark-tokenizer", default=None, help="本地 tokenizer/model 路径，用于构造精确输入 token 长度")
+    parser.add_argument("--benchmark-temperature", type=float, default=0.0, help="benchmark 采样温度")
+    parser.add_argument("--ready-timeout", type=float, default=900.0, help="等待服务就绪的超时时间")
+    parser.add_argument("--exit-after-benchmark", action="store_true", help="benchmark 完成后自动停止服务")
     # parse_known_args：未识别的参数存入 sglang_argv
     monitor_args, sglang_argv = parser.parse_known_args()
     return monitor_args, sglang_argv
@@ -160,6 +173,65 @@ def save_experiment_summary(exp_dir: Path, start_ts: float, exit_code: int):
     print(f"[monitor] 实验摘要已保存 → {out_path}", flush=True)
 
 
+def _get_option(argv: list[str], name: str, default=None):
+    if name not in argv:
+        return default
+    idx = argv.index(name)
+    if idx + 1 >= len(argv):
+        return default
+    return argv[idx + 1]
+
+
+def _infer_benchmark_port(monitor_args, sglang_argv: list[str]) -> int:
+    return monitor_args.benchmark_port or int(_get_option(sglang_argv, "--port", 8000))
+
+
+def _infer_benchmark_model(monitor_args, sglang_argv: list[str]) -> str:
+    return (
+        monitor_args.benchmark_model
+        or _get_option(sglang_argv, "--served-model-name")
+        or Path(_get_option(sglang_argv, "--model", "model")).name
+    )
+
+
+def run_optional_benchmark(exp_dir: Path, monitor_args, sglang_argv: list[str], proc: subprocess.Popen):
+    if not monitor_args.benchmark:
+        return
+
+    from monitor_common.inference_benchmark import parse_int_list, run_benchmark_matrix, wait_for_server
+
+    port = _infer_benchmark_port(monitor_args, sglang_argv)
+    model = _infer_benchmark_model(monitor_args, sglang_argv)
+    base_url = f"http://{monitor_args.benchmark_host}:{port}"
+    print(f"[monitor] 等待推理服务就绪: {base_url}", flush=True)
+    wait_for_server(
+        base_url,
+        timeout_secs=monitor_args.ready_timeout,
+        is_process_alive=lambda: proc.poll() is None,
+    )
+
+    loaded_snapshot = take_memory_snapshot(label="model_loaded")
+    with open(exp_dir / "loaded_memory.json", "w", encoding="utf-8") as f:
+        json.dump(loaded_snapshot, f, ensure_ascii=False, indent=2)
+    print(f"[monitor] 模型加载后内存快照已保存 → {exp_dir / 'loaded_memory.json'}", flush=True)
+
+    run_benchmark_matrix(
+        exp_dir=exp_dir,
+        base_url=base_url,
+        model=model,
+        input_lengths=parse_int_list(monitor_args.benchmark_input_lengths, [128, 512, 2048]),
+        output_lengths=parse_int_list(monitor_args.benchmark_output_lengths, [128, 512]),
+        repetitions=monitor_args.benchmark_repetitions,
+        warmup=monitor_args.benchmark_warmup,
+        tokenizer_path=monitor_args.benchmark_tokenizer or _get_option(sglang_argv, "--model"),
+        temperature=monitor_args.benchmark_temperature,
+    )
+
+    if monitor_args.exit_after_benchmark and proc.poll() is None:
+        print("[monitor] benchmark 完成，正在停止 sglang 服务...", flush=True)
+        proc.send_signal(signal.SIGTERM)
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -205,6 +277,11 @@ def main():
     start_ts = time.monotonic()
     proc = subprocess.Popen(cmd)
 
+    try:
+        run_optional_benchmark(exp_dir, monitor_args, sglang_argv, proc)
+    except Exception as exc:
+        print(f"[monitor] benchmark 失败（服务继续运行，已保留已有数据）: {exc}", flush=True)
+
     # 7. 信号转发：将 SIGTERM/SIGINT 传递给 sglang 子进程
     def _forward_signal(signum, frame):
         if proc.poll() is None:
@@ -236,7 +313,9 @@ def main():
 
     # 11. 自动生成图表
     try:
+        from monitor_common.inference_metrics import generate_inference_metrics_summary
         from plot_experiment import generate_plots
+        generate_inference_metrics_summary(exp_dir)
         generate_plots(exp_dir)
     except Exception as e:
         print(f"[monitor] 绘图失败（不影响数据保存）: {e}", flush=True)

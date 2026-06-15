@@ -1,7 +1,7 @@
 """
 Launch LLaMA-Factory KTransformers SFT with resource monitoring.
 
-Default command targets the local DeepSeek-V3.2 AMXINT8 SFT config created in
+Default command targets the local Qwen3-30B-A3B AMXINT8 SFT config created in
 LLaMA-Factory. Pass a custom command after "--" to monitor any equivalent SFT
 launch command.
 """
@@ -28,12 +28,12 @@ from resource_monitor import ResourceMonitor, take_snapshot  # noqa: E402
 DEFAULT_WORKDIR = "/mnt/data/wbw/LLaMA-Factory"
 DEFAULT_ACCELERATE = "/mnt/data/wbw/miniconda3/envs/Kllama/bin/accelerate"
 DEFAULT_CONFIG = "examples/ktransformers/accelerate/fsdp2_kt_int8.yaml"
-DEFAULT_TRAIN_YAML = "examples/ktransformers/train_lora/deepseek_v32_lora_sft_kt.yaml"
+DEFAULT_TRAIN_YAML = "examples/ktransformers/train_lora/qwen3_30b_a3b_lora_sft_kt.yaml"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Monitor a DeepSeek-V3.2 KTransformers SFT run",
+        description="Monitor a Qwen3-30B-A3B KTransformers SFT run",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--monitor-interval", type=float, default=5.0, help="resource sampling interval in seconds")
@@ -271,48 +271,36 @@ def main() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
+        preexec_fn=os.setsid,
     )
     monitor.set_root_pid(proc.pid)
     save_json(exp_dir / "process.json", {"root_pid": proc.pid, "start_time": datetime.now().isoformat(timespec="seconds")})
 
-    def _forward_signal(signum, frame):
-        if proc.poll() is None:
-            proc.send_signal(signum)
-
-    signal.signal(signal.SIGTERM, _forward_signal)
-    signal.signal(signal.SIGINT, _forward_signal)
-
-    exit_code = 0
+    exit_code = 1
     try:
-        with open(train_log_path, "w", encoding="utf-8") as log_f:
+        with open(train_log_path, "w", encoding="utf-8") as log_file:
             assert proc.stdout is not None
             for line in proc.stdout:
-                log_f.write(line)
-                log_f.flush()
+                log_file.write(line)
+                log_file.flush()
                 if not args.no_tee:
                     print(line, end="", flush=True)
         exit_code = proc.wait()
     except KeyboardInterrupt:
-        if proc.poll() is None:
-            proc.send_signal(signal.SIGINT)
-        try:
-            exit_code = proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            exit_code = proc.wait()
+        print("[monitor] keyboard interrupt; terminating training")
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        exit_code = proc.wait(timeout=30)
     finally:
         monitor.stop()
         write_summary(exp_dir, start_ts, exit_code, output_dir, train_yaml, args)
+        plot_script = _SCRIPT_DIR / "plot_sft_experiment.py"
+        if plot_script.exists():
+            subprocess.call([sys.executable, str(plot_script), str(exp_dir)], cwd=args.workdir, env=env)
 
-    try:
-        from plot_sft_experiment import generate_plots
-
-        generate_plots(exp_dir)
-    except Exception as exc:
-        print(f"[monitor] plot generation failed: {exc}", flush=True)
-
-    print(f"[monitor] finished with exit code {exit_code}; data saved in {exp_dir}", flush=True)
+    print(f"[monitor] finished with exit code {exit_code}; data saved in {exp_dir}")
     sys.exit(exit_code)
 
 
