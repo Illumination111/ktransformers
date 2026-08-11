@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-bef5dd85.js";
+            window.path_to_searchindex_js = "searchindex-614f54f9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16789068.js"></script>
@@ -1465,6 +1465,27 @@ LLAMAFACTORY_ALLOW_TRANSFORMERS_KT=1 \
 <p>Replace the YAML filename with the <code>text</code> or <code>vision</code> example to use those scopes. Do not omit <code>use_kt: true</code>.</p>
 <h3 id="8-check-the-run-and-outputs"><a class="header" href="#8-check-the-run-and-outputs">8. Check the run and outputs</a></h3>
 <p>At startup, verify that the selected VLM LoRA scope is reported, the expected trainable modules are listed, and the KT VLM Conv3D compatibility path is enabled for trainable Qwen VLM runs on PyTorch 2.9.x. Training artifacts are written to <code>output_dir</code>; depending on the selected scope, they include the PEFT adapter metadata and non-expert LoRA weights, plus KT fused expert LoRA weights when language experts are trainable.</p>
+<h4 id="verified-qwen35-vlm-lora-smoke-test-results"><a class="header" href="#verified-qwen35-vlm-lora-smoke-test-results">Verified Qwen3.5 VLM LoRA smoke-test results</a></h4>
+<p>Test server configuration:</p>
+<ul>
+<li>2 x Intel Xeon Platinum 8488C CPUs, 96 physical cores / 192 threads, and 2 NUMA nodes;</li>
+<li>2.0 TiB host memory with no swap;</li>
+<li>8 x NVIDIA GeForce RTX 4090 GPUs;</li>
+<li>Python 3.12.13, PyTorch 2.9.1+cu128, Transformers-KT 5.6.0, Accelerate-KT 1.14.0, and ms-swift 4.4.2;</li>
+<li>FSDP2 with 8 processes and KT <code>AMXBF16</code>, tensor parallelism enabled, 80 KT CPU threads, and 2 NUMA-aware thread pools.</li>
+</ul>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Model</th><th>Result</th><th style="text-align: right">Trainable LoRA parameters</th><th style="text-align: right">One-step runtime</th><th style="text-align: right">Host RAM panel peak (increase)</th><th style="text-align: right">GPU VRAM peak</th></tr>
+</thead>
+<tbody>
+<tr><td>Qwen3.5-122B-A10B</td><td>PASS</td><td style="text-align: right">21,639,936</td><td style="text-align: right">22.90 s</td><td style="text-align: right">328.02 GiB (311.62 GiB)</td><td style="text-align: right">10.69 GiB/GPU; 85.19 GiB total</td></tr>
+<tr><td>Qwen3.5-397B-A17B</td><td>PASS</td><td style="text-align: right">29,005,568</td><td style="text-align: right">51.46 s</td><td style="text-align: right">886.11 GiB (869.35 GiB)</td><td style="text-align: right">13.96 GiB/GPU; 111.20 GiB total</td></tr>
+</tbody>
+</table>
+</div>
+<p>Both runs used <code>vlm_lora_scope: all</code>, LoRA rank 8, cutoff length 512, batch size 1 per device, and 8 RTX 4090 GPUs. A real image batch produced non-zero language and vision LoRA gradients, and sampled parameters in both modalities changed by approximately <code>1.0e-4</code> after the optimizer step. Host RAM is the <code>htop</code>/<code>free</code> top-panel physical-memory value, not a sum of process RSS; the value in parentheses is the peak increase over the pre-launch baseline.</p>
 <p>Common failures:</p>
 <ul>
 <li>If LlamaFactory rejects stock <code>transformers==5.6.0</code>, reinstall with <code>requirements-vlm-lora.txt</code> and keep <code>LLAMAFACTORY_ALLOW_TRANSFORMERS_KT=1</code> in a direct CLI launch.</li>
