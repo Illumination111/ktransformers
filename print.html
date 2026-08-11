@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c8db3f6b.js";
+            window.path_to_searchindex_js = "searchindex-88d0cc7c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-16789068.js"></script>
@@ -303,10 +303,88 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch \
 </code></pre>
 <p>👉 <strong><a href="doc/en/SFT/KTransformers-Fine-Tuning_Quick-Start.html">Quick Start →</a></strong>
 👉 <strong><a href="doc/en/SFT/KTransformers-Fine-Tuning_User-Guide.html">Full Documentation →</a></strong></p>
-<p><strong>VLM LoRA (Qwen3.5):</strong> Clone the <code>main</code> branches of <a href="https://github.com/Illumination111/ktransformers">KTransformers</a> and <a href="https://github.com/Illumination111/LlamaFactory">LLaMA-Factory</a>, install LLaMA-Factory with <code>pip install -e .</code> first, then run <code>pip install -r requirements-vlm-lora.txt</code> from the KTransformers root. Set the model and dataset paths in the LLaMA-Factory <code>qwen3_5moe_vlm_{text,vision,all}_lora_sft_kt.yaml</code> example for the desired LoRA scope, then launch it with:</p>
-<pre><code class="language-bash">LLAMAFACTORY_ALLOW_TRANSFORMERS_KT=1 llamafactory-cli train \
+<h4 id="qwen35-vlm-lora"><a class="header" href="#qwen35-vlm-lora">Qwen3.5 VLM LoRA</a></h4>
+<ol>
+<li>
+<p><strong>Clone the two integration repositories.</strong> Keep both checkouts under the same parent directory so the commands below can use relative paths.</p>
+<pre><code class="language-bash">git clone https://github.com/Illumination111/LlamaFactory.git
+git clone https://github.com/Illumination111/ktransformers.git
+</code></pre>
+</li>
+<li>
+<p><strong>Install LlamaFactory first.</strong> This establishes the base training environment before the KT-patched packages are installed.</p>
+<pre><code class="language-bash">cd LlamaFactory
+pip install -e .
+</code></pre>
+</li>
+<li>
+<p><strong>Install the VLM LoRA dependency set from the KTransformers root.</strong> The dedicated requirements file pins <code>torch==2.9.1</code>, <code>torchvision==0.24.1</code>, and <code>torchaudio==2.9.1</code>; installs the local <code>kt-kernel[vlm-sft]</code> and <code>ktransformers[vlm-sft]</code>; and pulls in the verified <code>transformers-kt==5.6.0.post1</code>, <code>accelerate-kt==1.14.0.post1</code>, and <code>ms-swift&gt;=4.4.2,&lt;4.5</code> compatibility stack. Keep this step after the LlamaFactory installation so the KT forks are the active implementations.</p>
+<pre><code class="language-bash">cd ../ktransformers
+pip install -r requirements-vlm-lora.txt
+</code></pre>
+</li>
+<li>
+<p><strong>Prepare the model and dataset.</strong> Put the Qwen3.5 VLM weights at a local or Hugging Face path, register a custom multimodal dataset in <code>LlamaFactory/data/dataset_info.json</code>, and set <code>model_name_or_path</code> and <code>dataset</code> below. The built-in <code>mllm_demo</code> dataset can be used for a smoke test without additional registration.</p>
+</li>
+<li>
+<p><strong>Create or edit the training YAML.</strong> The repository already provides <code>examples/ktransformers/train_lora/qwen3_5moe_vlm_all_lora_sft_kt.yaml</code>; the following is a complete <code>all</code>-scope example:</p>
+<pre><code class="language-yaml">### model
+model_name_or_path: Qwen/Qwen3.5-122B-A10B
+image_max_pixels: 262144
+video_max_pixels: 16384
+trust_remote_code: true
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 8
+lora_alpha: 16
+lora_target: all
+vlm_lora_scope: all
+
+### dataset
+dataset: mllm_demo
+template: qwen3_5
+cutoff_len: 512
+overwrite_cache: true
+preprocessing_num_workers: 4
+dataloader_num_workers: 1
+
+### output
+output_dir: saves/KT_FT_qwen35Moe_VLM_all
+logging_steps: 1
+save_steps: 100
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### train
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+gradient_checkpointing: true
+gradient_checkpointing_kwargs: {use_reentrant: false}
+ddp_timeout: 360000000
+
+### ktransformers
+use_kt: true
+</code></pre>
+<p>Set <code>vlm_lora_scope</code> to <code>text</code>, <code>vision</code>, or <code>all</code> to train language modules, vision/projector modules, or both. Keep <code>lora_target: all</code> for every non-default VLM scope. Matching ready-to-run YAML files for all three scopes are under <code>LlamaFactory/examples/ktransformers/train_lora/</code>.</p>
+</li>
+<li>
+<p><strong>Launch training from the LlamaFactory root and check the configured output directory.</strong></p>
+<pre><code class="language-bash">cd ../LlamaFactory
+LLAMAFACTORY_ALLOW_TRANSFORMERS_KT=1 \
+  llamafactory-cli train \
   examples/ktransformers/train_lora/qwen3_5moe_vlm_all_lora_sft_kt.yaml
 </code></pre>
+</li>
+</ol>
 <hr>
 <h2 id="-citation"><a class="header" href="#-citation">🔥 Citation</a></h2>
 <p>If you use KTransformers in your research, please cite our paper:</p>
