@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import importlib.util
 import sys
 from pathlib import Path
@@ -21,53 +22,47 @@ sys.modules[SPEC.name] = conv3d_compat
 SPEC.loader.exec_module(conv3d_compat)
 
 
-def test_prepare_vlm_conv3d_only_patches_supported_vlm(monkeypatch):
-    calls = []
+def _vlm(conv3d):
+    model = torch.nn.Sequential(conv3d)
+    model.config = SimpleNamespace(model_type="qwen3_vl_moe", vision_config=object())
+    return model
+
+
+def test_patch_vlm_conv3d_matches_native_forward_and_backward(monkeypatch):
     monkeypatch.setattr(conv3d_compat, "_requires_conv3d_patch", lambda: True)
-    monkeypatch.setattr(
-        conv3d_compat, "_enable_swift_patch", lambda: calls.append(True)
+    native_forward = torch.nn.Conv3d.forward
+    reference = _vlm(
+        torch.nn.Conv3d(
+            3, 4, kernel_size=(2, 4, 4), stride=(2, 4, 4), bias=True
+        ).double()
     )
-
-    conv3d_compat.prepare_vlm_conv3d(
-        SimpleNamespace(model_type="qwen3_vl_moe", vision_config=object())
+    patched = copy.deepcopy(reference)
+    reference_input = torch.randn(
+        2, 3, 4, 8, 8, dtype=torch.float64, requires_grad=True
     )
-    conv3d_compat.prepare_vlm_conv3d(
-        SimpleNamespace(model_type="qwen3_moe", vision_config=None)
-    )
+    patched_input = reference_input.detach().clone().requires_grad_(True)
 
-    assert calls == [True]
+    assert conv3d_compat.patch_vlm_conv3d(patched) == ["0"]
+    assert conv3d_compat.patch_vlm_conv3d(patched) == ["0"]
+    assert torch.nn.Conv3d.forward is native_forward
+    assert conv3d_compat.is_vlm_conv3d_compatible(patched)
+
+    expected = reference(reference_input)
+    actual = patched(patched_input)
+    expected.square().sum().backward()
+    actual.square().sum().backward()
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(patched_input.grad, reference_input.grad)
+    torch.testing.assert_close(patched[0].weight.grad, reference[0].weight.grad)
+    torch.testing.assert_close(patched[0].bias.grad, reference[0].bias.grad)
 
 
-def test_validate_vlm_conv3d_accepts_qwen_patch_embed(monkeypatch):
+def test_patch_vlm_conv3d_rejects_unsupported_contract_atomically(monkeypatch):
     monkeypatch.setattr(conv3d_compat, "_requires_conv3d_patch", lambda: True)
-    monkeypatch.setattr(conv3d_compat, "_enable_swift_patch", lambda: None)
-    model = torch.nn.Sequential(
-        torch.nn.Conv3d(3, 4, kernel_size=(2, 16, 16), stride=(2, 16, 16))
-    )
+    model = _vlm(torch.nn.Conv3d(3, 4, kernel_size=(2, 4, 4), stride=(1, 4, 4)))
 
-    assert conv3d_compat.validate_vlm_conv3d(model) == ["0"]
+    with pytest.raises(RuntimeError, match="stride="):
+        conv3d_compat.patch_vlm_conv3d(model)
 
-
-@pytest.mark.parametrize(
-    ("kwargs", "reason"),
-    (
-        ({"stride": (1, 16, 16)}, "stride="),
-        ({"padding": (0, 1, 0)}, "padding="),
-        ({"dilation": (1, 2, 1)}, "dilation="),
-        ({"groups": 3, "out_channels": 6}, "groups="),
-    ),
-)
-def test_validate_vlm_conv3d_rejects_unsupported_contract(monkeypatch, kwargs, reason):
-    monkeypatch.setattr(conv3d_compat, "_requires_conv3d_patch", lambda: True)
-    monkeypatch.setattr(conv3d_compat, "_enable_swift_patch", lambda: None)
-    options = {
-        "in_channels": 3,
-        "out_channels": 4,
-        "kernel_size": (2, 16, 16),
-        "stride": (2, 16, 16),
-    }
-    options.update(kwargs)
-    model = torch.nn.Sequential(torch.nn.Conv3d(**options))
-
-    with pytest.raises(RuntimeError, match=reason):
-        conv3d_compat.validate_vlm_conv3d(model)
+    assert not hasattr(model[0], "_kt_conv3d_compatible")

@@ -1,6 +1,6 @@
 # Heterogeneous VLM LoRA Fine-Tuning with KTransformers and LLaMA-Factory
 
-Last updated: 2026-08-13
+Last updated: 2026-08-14
 
 This guide covers MoE VLM LoRA SFT with LLaMA-Factory for training and
 KTransformers for CPU/GPU heterogeneous expert execution. The workflow has been
@@ -18,7 +18,7 @@ training, or full-parameter fine-tuning.
 - An AVX-512 or AMX CPU recommended for KT expert execution
 - Sufficient GPU memory, CPU memory, and storage for the selected model
 - LLaMA-Factory with `requirements/ktransformers.txt` and the Qwen3-VL KT example
-- KTransformers `main` with Qwen3-VL MoE and VLM Conv3D support
+- A KTransformers release with Qwen3-VL MoE and instance-scoped VLM Conv3D support
 
 ### 2. Create the environment
 
@@ -49,11 +49,7 @@ pip check
 `requirements/ktransformers.txt` should contain:
 
 ```text
-transformers==5.8.0
-accelerate==1.11.0
-transformers-kt==5.6.0.post1
-accelerate-kt==1.14.0.post1
-kt-kernel[vlm-sft] @ git+https://github.com/kvcache-ai/ktransformers.git@main#subdirectory=kt-kernel
+ktransformers[sft]
 ```
 
 Install in this order so the KT-enabled Transformers and Accelerate modules are
@@ -77,7 +73,7 @@ python - <<'PY'
 import importlib.metadata as md
 import accelerate, kt_kernel, torch, transformers
 from accelerate.utils.dataclasses import KTransformersPlugin
-from kt_kernel.sft.conv3d_compat import prepare_vlm_conv3d, validate_vlm_conv3d
+from kt_kernel.sft.conv3d_compat import is_vlm_conv3d_compatible, patch_vlm_conv3d
 from transformers.integrations.kt import is_kt_expert_loading_enabled
 
 print("torch                    =", torch.__version__)
@@ -87,17 +83,17 @@ print("transformers-kt          =", md.version("transformers-kt"))
 print("accelerate-kt            =", md.version("accelerate-kt"))
 print("kt-kernel                =", kt_kernel.__version__)
 print("KT plugin                =", KTransformersPlugin.__name__)
-print("Conv3D API               =", prepare_vlm_conv3d.__name__, validate_vlm_conv3d.__name__)
+print("Conv3D API               =", patch_vlm_conv3d.__name__, is_vlm_conv3d_compatible.__name__)
 print("Transformers KT hook     =", is_kt_expert_loading_enabled.__name__)
 PY
 
 pip check
 ```
 
-The validated stack reports distribution/module versions
-`transformers 5.8.0/5.6.0` and `accelerate 1.11.0/1.14.0`. This difference is
-expected because the KT fork distributions preserve compatible package metadata
-while providing KT-enabled modules.
+The KT-enabled modules may report different module and distribution versions
+because the current KT fork wheels provide the `transformers` and `accelerate`
+import packages under separate distribution names. The capability imports above
+are the authoritative installation check.
 
 ### 5. Configure and launch training
 
@@ -166,8 +162,8 @@ experts, runs them on CPU backends, and stores their fused LoRA tensors.
 The VLM-specific KT code only:
 
 1. Maps Qwen3-VL MoE experts and their checkpoint prefix.
-2. On torch 2.9.x, activates the verified ms-swift Conv3D replacement before
-   model loading and validates its supported operator contract.
+2. On torch 2.9.x, patches only the supported Conv3D instances on the loaded KT
+   VLM and marks them after validating the operator contract.
 
 It is not used when `use_kt: false`.
 
@@ -240,10 +236,10 @@ pip install -r requirements/ktransformers.txt
 
 Reinstall `kt-kernel` from a KTransformers revision containing VLM support.
 
-#### The ms-swift Conv3D check fails
+#### The KT Conv3D compatibility check fails
 
-Confirm `ms-swift>=4.4.2,<4.5` is installed. The check rejects Conv3D modules
-whose stride, padding, dilation, or groups are unsupported by the replacement.
+The instance-scoped KT fallback rejects Conv3D modules whose stride, padding,
+dilation, or groups are unsupported. No ms-swift installation is required.
 
 #### Qwen3.5 cannot import `causal_conv1d_cuda`
 
