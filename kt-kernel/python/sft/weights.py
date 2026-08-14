@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from .arch import MOEArchConfig
+from .conv3d_compat import _canonicalize_qwen3_vl_fused_expert_weights
 from .dist_utils import _maybe_zero3_gathered_parameters
 
 logger = logging.getLogger(__name__)
@@ -25,49 +26,6 @@ try:
 except ImportError:
     SAFETENSORS_AVAILABLE = False
     safe_open = None
-
-
-def _canonicalize_fused_expert_weights(
-    gate_up: torch.Tensor,
-    down: torch.Tensor,
-    moe_config: MOEArchConfig,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return fused expert weights in KT's [E, I, H]/[E, H, I] layout."""
-    expert_num = moe_config.expert_num
-    intermediate_size = moe_config.intermediate_size
-
-    if gate_up.dim() != 3 or down.dim() != 3 or gate_up.shape[0] != expert_num or down.shape[0] != expert_num:
-        raise ValueError(
-            "Unexpected fused expert weight shapes: "
-            f"gate_up_proj={tuple(gate_up.shape)}, down_proj={tuple(down.shape)}, expected E={expert_num}"
-        )
-
-    if gate_up.shape[1] == 2 * intermediate_size:
-        hidden_size = gate_up.shape[2]
-        gate_proj, up_proj = gate_up.split(intermediate_size, dim=1)
-    elif gate_up.shape[2] == 2 * intermediate_size:
-        hidden_size = gate_up.shape[1]
-        gate_proj, up_proj = (
-            tensor.transpose(1, 2) for tensor in gate_up.split(intermediate_size, dim=2)
-        )
-    else:
-        raise ValueError(
-            "Cannot locate the fused gate/up dimension: "
-            f"gate_up_proj={tuple(gate_up.shape)}, intermediate_size={intermediate_size}"
-        )
-
-    expected_down_shape = (expert_num, hidden_size, intermediate_size)
-    if tuple(down.shape) == expected_down_shape:
-        down_proj = down
-    elif tuple(down.shape) == (expert_num, intermediate_size, hidden_size):
-        down_proj = down.transpose(1, 2)
-    else:
-        raise ValueError(
-            f"Unexpected fused down_proj shape {tuple(down.shape)}; expected "
-            f"{expected_down_shape} or {(expert_num, intermediate_size, hidden_size)}"
-        )
-
-    return gate_proj.contiguous(), up_proj.contiguous(), down_proj.contiguous()
 
 
 # =============================================================================
@@ -86,9 +44,8 @@ def extract_moe_weights(
 
     Supports two formats:
     - ModuleList of Linear experts (transformers v4 style)
-    - Fused Parameters (transformers v5 style): supports both
-      ``gate_up_proj`` [E, 2*I, H] / ``down_proj`` [E, H, I] and their
-      transposed Qwen3-VL layouts.
+    - Fused Parameters (transformers v5 style): single module with
+      ``gate_up_proj`` [E, 2*I, H] and ``down_proj`` [E, H, I] tensors.
     """
     from .arch import detect_fused_experts
 
@@ -98,7 +55,16 @@ def extract_moe_weights(
     if detect_fused_experts(experts):
         gate_up = getattr(experts, "gate_up_proj").data
         down_fused = getattr(experts, "down_proj").data
-        return _canonicalize_fused_expert_weights(gate_up, down_fused, moe_config)
+        vlm_weights = _canonicalize_qwen3_vl_fused_expert_weights(gate_up, down_fused, moe_config)
+        if vlm_weights is not None:
+            return vlm_weights
+        # gate_up_proj is [E, 2*I, H], split into gate [E, I, H] and up [E, I, H]
+        intermediate = gate_up.shape[1] // 2
+        gate_proj = gate_up[:, :intermediate, :].contiguous()
+        up_proj = gate_up[:, intermediate:, :].contiguous()
+        # down_proj is already [E, H, I]
+        down_proj = down_fused.contiguous()
+        return gate_proj, up_proj, down_proj
 
     gate_name, up_name, down_name = moe_config.weight_names
 
@@ -430,9 +396,16 @@ def load_experts_from_checkpoint_files(
         down = tensor_map.get(fused_down_key)
         if gate_up is None or down is None:
             raise FileNotFoundError(f"Missing fused expert weights for layer {layer_idx}")
-        gate_up = gate_up.cpu().to(torch.bfloat16)
+        gate_up = gate_up.cpu().to(torch.bfloat16).contiguous()
         down = down.cpu().to(torch.bfloat16)
-        gate_proj, up_proj, down_proj = _canonicalize_fused_expert_weights(gate_up, down, moe_config)
+        vlm_weights = _canonicalize_qwen3_vl_fused_expert_weights(gate_up, down, moe_config)
+        if vlm_weights is not None:
+            gate_proj, up_proj, down_proj = vlm_weights
+        else:
+            I = gate_up.shape[1] // 2
+            gate_proj = gate_up[:, :I, :].contiguous()
+            up_proj = gate_up[:, I:, :].contiguous()
+            down_proj = down.contiguous()
         del gate_up
         print(
             f"[kt_moe] Layer {layer_idx}: fused expert format — "

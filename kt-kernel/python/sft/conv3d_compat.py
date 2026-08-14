@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Instance-scoped VLM Conv3D compatibility for the torch 2.9 KT stack."""
+"""Instance-scoped Qwen VLM compatibility for the KT SFT stack."""
 
 from __future__ import annotations
 
@@ -20,6 +20,30 @@ _SUPPORTED_MODEL_TYPES = {
 }
 _COMPATIBLE_ATTR = "_kt_conv3d_compatible"
 _ORIGINAL_FORWARD_ATTR = "_kt_original_conv3d_forward"
+
+
+def _canonicalize_qwen3_vl_fused_expert_weights(
+    gate_up: Any,
+    down: Any,
+    moe_config: Any,
+) -> tuple[Any, Any, Any] | None:
+    """Convert only the transposed Qwen3-VL fused expert layout to KT layout."""
+    expert_num = moe_config.expert_num
+    intermediate_size = moe_config.intermediate_size
+    if gate_up.dim() != 3 or down.dim() != 3:
+        return None
+
+    hidden_size = gate_up.shape[1]
+    if tuple(gate_up.shape) != (expert_num, hidden_size, 2 * intermediate_size):
+        return None
+    if tuple(down.shape) != (expert_num, intermediate_size, hidden_size):
+        return None
+
+    gate_proj, up_proj = (
+        tensor.transpose(1, 2).contiguous()
+        for tensor in gate_up.split(intermediate_size, dim=2)
+    )
+    return gate_proj, up_proj, down.transpose(1, 2).contiguous()
 
 
 def _requires_conv3d_patch() -> bool:
